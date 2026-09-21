@@ -1,6 +1,5 @@
 import { Request, Response } from 'express';
 import { GeminiTriageService } from '../services/gemini.service';
-import { AppUser } from '../models/app_user';
 import { AppTriageHistory } from '../models/app_triage_history';
 
 export const analyzeSymptoms = async (req: Request, res: Response) => {
@@ -32,22 +31,7 @@ export const analyzeSymptoms = async (req: Request, res: Response) => {
 
 export const chatTriage = async (req: Request, res: Response) => {
   try {
-    const { message, history, imageBase64, imageMimeType, patientInfo, location } = req.body;
-    let healthData = null;
-
-    if (patientInfo && patientInfo.citizencardno) {
-      const user = await AppUser.findOne({ where: { citizencardno: patientInfo.citizencardno } });
-      if (user) {
-        healthData = {
-          drug_allergies: JSON.parse(user.drug_allergies || '[]'),
-          food_allergies: JSON.parse(user.food_allergies || '[]'),
-          chronic_diseases: JSON.parse(user.chronic_diseases || '[]'),
-          regular_medications: JSON.parse(user.regular_medications || '[]'),
-          weight: user.weight,
-          height: user.height,
-        };
-      }
-    }
+    const { message, history, imageBase64, imageMimeType, location, caregiverContext } = req.body;
 
     if (!message && !imageBase64) {
       return res.status(400).json({ error: 'Message or image is required' });
@@ -58,15 +42,16 @@ export const chatTriage = async (req: Request, res: Response) => {
       history: history || [],
       imageBase64,
       imageMimeType,
-      patientInfo,
-      healthData
+      patientInfo: undefined,
+      healthData: null,
+      caregiverContext
     } as any);
 
-    if (result.is_complete && patientInfo && patientInfo.citizencardno) {
-      // Save to database
+    // Save to database anonymously
+    if (result.is_complete) {
       try {
         await AppTriageHistory.create({
-          citizencardno: patientInfo.citizencardno,
+          citizencardno: 'anonymous',
           chief_complaint: message || history?.[0]?.text || 'ประเมินจากภาพ/เสียง',
           severity: result.severity,
           destination: result.destination,
@@ -112,23 +97,14 @@ export const getHistory = async (req: Request, res: Response) => {
     res.status(500).json({ status: 'error', message: error.message });
   }
 };
+
 export const getAdminCases = async (req: Request, res: Response) => {
   try {
     const cases = await AppTriageHistory.findAll({
       order: [['createdAt', 'DESC']]
     });
 
-    const cids = cases.map((c: any) => c.citizencardno).filter(c => c);
-    const users = await AppUser.findAll({
-      where: { citizencardno: cids }
-    });
-    const userMap = users.reduce((acc: any, user: any) => {
-      acc[user.citizencardno] = user;
-      return acc;
-    }, {});
-
     const enrichedCases = cases.map((c: any) => {
-      const user = userMap[c.citizencardno] || null;
       const caseData = c.toJSON();
       if (caseData.image_data) {
         caseData.imageBase64 = Buffer.from(caseData.image_data).toString('base64');
@@ -136,7 +112,7 @@ export const getAdminCases = async (req: Request, res: Response) => {
       }
       return {
         ...caseData,
-        user
+        user: null // No user data anymore
       };
     });
 
